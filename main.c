@@ -187,6 +187,13 @@ static void redraw_control(HWND hwnd) {
     }
 }
 
+static void redraw_opaque_control(HWND hwnd) {
+    if (hwnd != NULL && IsWindow(hwnd)) {
+        RedrawWindow(hwnd, NULL, NULL,
+                     RDW_INVALIDATE | RDW_ERASE | RDW_ERASENOW | RDW_UPDATENOW);
+    }
+}
+
 static void sync_switch_check(HWND hwnd, int checked) {
     if (hwnd != NULL && IsWindow(hwnd)) {
         SendMessageW(hwnd, BM_SETCHECK, checked ? BST_CHECKED : BST_UNCHECKED, 0);
@@ -886,14 +893,29 @@ static void update_status(void) {
     set_status(text);
 }
 
+static void set_preview_text(const wchar_t *text) {
+    const wchar_t *safe_text = text != NULL ? text : L"";
+
+    if (g_app.preview_edit == NULL || !IsWindow(g_app.preview_edit)) {
+        return;
+    }
+
+    SendMessageW(g_app.preview_edit, WM_SETREDRAW, FALSE, 0);
+    SetWindowTextW(g_app.preview_edit, safe_text);
+    SendMessageW(g_app.preview_edit, EM_SETSEL, 0, 0);
+    SendMessageW(g_app.preview_edit, EM_SCROLLCARET, 0, 0);
+    SendMessageW(g_app.preview_edit, WM_SETREDRAW, TRUE, 0);
+    redraw_opaque_control(g_app.preview_edit);
+}
+
 static void update_preview(void) {
     unsigned long id = list_selected_id();
     const ClipItem *item = store_find_const(&g_app.store, id);
 
     if (item == NULL) {
-        SetWindowTextW(g_app.preview_edit, L"请选择左侧记录查看完整内容。");
+        set_preview_text(L"请选择左侧记录查看完整内容。");
     } else {
-        SetWindowTextW(g_app.preview_edit, item->text);
+        set_preview_text(item->text);
     }
 
     update_action_buttons();
@@ -1283,7 +1305,7 @@ static void create_controls(HWND hwnd) {
     g_app.preview_label = make_control(hwnd, L"STATIC", L"内容预览",
                                        WS_CHILD | WS_VISIBLE, 0, IDC_PREVIEW_LABEL);
     g_app.preview_edit = make_control(hwnd, L"EDIT", L"请选择左侧记录查看完整内容。",
-                                      WS_CHILD | WS_VISIBLE | WS_TABSTOP |
+                                      WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_CLIPSIBLINGS |
                                           WS_VSCROLL | ES_MULTILINE | ES_AUTOVSCROLL |
                                           ES_READONLY,
                                       0, IDC_PREVIEW_EDIT);
@@ -1737,7 +1759,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR command_line, i
     }
 
     hwnd = CreateWindowExW(0, wc.lpszClassName, APP_TITLE,
-                           WS_OVERLAPPEDWINDOW,
+                           WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
                            CW_USEDEFAULT, CW_USEDEFAULT, 980, 640,
                            NULL, NULL, instance, NULL);
     if (hwnd == NULL) {
