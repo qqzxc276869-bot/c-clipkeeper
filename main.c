@@ -101,6 +101,7 @@ typedef struct {
 static AppState g_app;
 
 static void update_status(void);
+static void redraw_opaque_control(HWND hwnd);
 
 static void set_status(const wchar_t *text) {
     if (g_app.status_text == NULL || !IsWindow(g_app.status_text)) {
@@ -118,10 +119,8 @@ static void set_hotkey_display_text(const wchar_t *text) {
         return;
     }
 
-    InvalidateRect(g_app.hotkey_display, NULL, TRUE);
     SetWindowTextW(g_app.hotkey_display, text);
-    InvalidateRect(g_app.hotkey_display, NULL, TRUE);
-    UpdateWindow(g_app.hotkey_display);
+    redraw_opaque_control(g_app.hotkey_display);
 }
 
 static void get_app_directory(wchar_t *out, size_t out_count) {
@@ -1568,7 +1567,12 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM l
     case WM_CTLCOLORSTATIC: {
         HDC hdc = (HDC)wparam;
         HWND control = (HWND)lparam;
-        if (control == g_app.title_text) {
+        if (control == g_app.preview_edit || control == g_app.hotkey_display) {
+            SetBkMode(hdc, OPAQUE);
+            SetBkColor(hdc, theme_surface_color());
+            SetTextColor(hdc, theme_text_color());
+            return (LRESULT)g_app.surface_brush;
+        } else if (control == g_app.title_text) {
             SetBkMode(hdc, TRANSPARENT);
             SetTextColor(hdc, theme_title_text_color());
         } else if (control == g_app.subtitle_text || control == g_app.status_text) {
