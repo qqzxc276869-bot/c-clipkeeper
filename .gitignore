@@ -1,0 +1,6 @@
+ClipKeeper.exe
+clips.tsv
+clipkeeper.ini
+*.obj
+*.ilk
+*.pdb
