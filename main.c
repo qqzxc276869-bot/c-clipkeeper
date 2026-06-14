@@ -1536,13 +1536,13 @@ static LRESULT CALLBACK quick_search_proc(HWND hwnd, UINT msg, WPARAM wparam, LP
         g_app.quick_edit = make_control(hwnd, L"EDIT", L"",
                                         WS_CHILD | WS_VISIBLE | WS_TABSTOP |
                                             ES_AUTOHSCROLL,
-                                        0, IDC_QUICK_SEARCH_EDIT);
+                                        WS_EX_CLIENTEDGE, IDC_QUICK_SEARCH_EDIT);
         g_app.quick_list = make_control(hwnd, L"LISTBOX", L"",
                                         WS_CHILD | WS_VISIBLE | WS_TABSTOP |
                                             WS_VSCROLL | LBS_NOTIFY |
                                             LBS_NOINTEGRALHEIGHT |
                                             LBS_HASSTRINGS,
-                                        0, IDC_QUICK_SEARCH_LIST);
+                                        WS_EX_CLIENTEDGE, IDC_QUICK_SEARCH_LIST);
         SendMessageW(g_app.quick_edit, EM_SETCUEBANNER, FALSE,
                      (LPARAM)L"输入关键字，回车复制，Esc 关闭");
         SendMessageW(g_app.quick_list, LB_SETITEMHEIGHT, 0, 28);
@@ -1617,6 +1617,9 @@ static void layout_controls(HWND hwnd) {
     RECT rc;
     int width;
     int height;
+    int layout_width;
+    int layout_left;
+    int layout_right;
     int margin = 24;
     int gap = 16;
     int title_h = 34;
@@ -1629,7 +1632,6 @@ static void layout_controls(HWND hwnd) {
     int button_w = 132;
     int pause_w = 112;
     int hotkey_check_w = 112;
-    int hotkey_display_w = 176;
     int hotkey_button_w = 116;
     int filter_w = 136;
     int max_label_w = 72;
@@ -1649,23 +1651,36 @@ static void layout_controls(HWND hwnd) {
     int panel_pad = 18;
     int content_bottom;
     int status_w;
+    int inner_left;
+    int inner_right;
+    int inner_w;
+    int row1_y;
+    int row2_y;
+    int row3_y;
+    int search_label_w = 92;
+    int row2_right_w;
+    int row2_display_w;
+    int row3_x;
 
     GetClientRect(hwnd, &rc);
     width = rc.right - rc.left;
     height = rc.bottom - rc.top;
+    layout_width = width > 1280 ? 1280 : width;
+    layout_left = (width - layout_width) / 2;
+    layout_right = layout_left + layout_width;
 
-    g_app.hero_rect.left = margin;
+    g_app.hero_rect.left = layout_left + margin;
     g_app.hero_rect.top = 18;
-    g_app.hero_rect.right = width - margin;
+    g_app.hero_rect.right = layout_right - margin;
     g_app.hero_rect.bottom = 114;
 
-    g_app.search_rect.left = margin;
+    g_app.search_rect.left = layout_left + margin;
     g_app.search_rect.top = g_app.hero_rect.bottom + 14;
-    g_app.search_rect.right = width - margin;
+    g_app.search_rect.right = layout_right - margin;
     g_app.search_rect.bottom = g_app.search_rect.top + 142;
 
-    g_app.action_rect.left = margin;
-    g_app.action_rect.right = width - margin;
+    g_app.action_rect.left = layout_left + margin;
+    g_app.action_rect.right = layout_right - margin;
     g_app.action_rect.bottom = height - 18;
     g_app.action_rect.top = g_app.action_rect.bottom - 66;
 
@@ -1676,13 +1691,13 @@ static void layout_controls(HWND hwnd) {
         content_h = 260;
     }
 
-    list_w = (width - margin * 2 - gap) / 2;
-    preview_x = margin + list_w + gap;
-    preview_w = width - preview_x - margin;
+    list_w = (layout_width - margin * 2 - gap) / 2;
+    preview_x = layout_left + margin + list_w + gap;
+    preview_w = layout_right - preview_x - margin;
 
-    g_app.left_panel_rect.left = margin;
+    g_app.left_panel_rect.left = layout_left + margin;
     g_app.left_panel_rect.top = content_top;
-    g_app.left_panel_rect.right = margin + list_w;
+    g_app.left_panel_rect.right = layout_left + margin + list_w;
     g_app.left_panel_rect.bottom = content_top + content_h;
 
     g_app.right_panel_rect.left = preview_x;
@@ -1712,45 +1727,50 @@ static void layout_controls(HWND hwnd) {
                (g_app.hero_rect.right - g_app.hero_rect.left) - panel_pad * 2,
                subtitle_h, TRUE);
 
-    MoveWindow(g_app.search_label, g_app.search_rect.left + panel_pad,
-               g_app.search_rect.top + 20, 92, label_h, TRUE);
+    inner_left = g_app.search_rect.left + panel_pad;
+    inner_right = g_app.search_rect.right - panel_pad;
+    inner_w = inner_right - inner_left;
+    row1_y = g_app.search_rect.top + 16;
+    row2_y = g_app.search_rect.top + 58;
+    row3_y = g_app.search_rect.top + 100;
 
-    MoveWindow(g_app.search_edit, g_app.search_rect.left + panel_pad + 92,
-               g_app.search_rect.top + 16,
-               (g_app.search_rect.right - g_app.search_rect.left) -
-                   panel_pad * 2 - pause_w - gap - 92,
-               edit_h, TRUE);
-    MoveWindow(g_app.pause_check, g_app.search_rect.right - panel_pad - pause_w,
-               g_app.search_rect.top + 16,
+    MoveWindow(g_app.search_label, inner_left, row1_y + 4,
+               search_label_w, label_h, TRUE);
+    MoveWindow(g_app.pause_check, inner_right - pause_w, row1_y,
                pause_w, edit_h, TRUE);
-    MoveWindow(g_app.hotkey_check, g_app.search_rect.left + panel_pad,
-               g_app.search_rect.top + 62,
+    MoveWindow(g_app.search_edit, inner_left + search_label_w,
+               row1_y,
+               inner_w - search_label_w - pause_w - gap,
+               edit_h, TRUE);
+
+    row2_right_w = hotkey_button_w + gap + quick_button_w;
+    row2_display_w = inner_w - hotkey_check_w - gap - row2_right_w - gap;
+    if (row2_display_w < 160) {
+        row2_display_w = 160;
+    }
+    MoveWindow(g_app.hotkey_check, inner_left, row2_y + 1,
                hotkey_check_w, hotkey_h, TRUE);
-    MoveWindow(g_app.hotkey_display,
-               g_app.search_rect.left + panel_pad + hotkey_check_w + 10,
-               g_app.search_rect.top + 58,
-               hotkey_display_w, hotkey_h, TRUE);
-    MoveWindow(g_app.hotkey_set_button,
-               g_app.search_rect.left + panel_pad + hotkey_check_w + 10 +
-                   hotkey_display_w + 10,
-               g_app.search_rect.top + 58,
-               hotkey_button_w, hotkey_h, TRUE);
-    MoveWindow(g_app.filter_sensitive_check, g_app.search_rect.left + panel_pad,
-               g_app.search_rect.top + 100,
+    MoveWindow(g_app.hotkey_display, inner_left + hotkey_check_w + gap,
+               row2_y,
+               row2_display_w, hotkey_h, TRUE);
+    MoveWindow(g_app.hotkey_set_button, inner_right - row2_right_w,
+               row2_y - 1,
+               hotkey_button_w, hotkey_h + 4, TRUE);
+    MoveWindow(g_app.quick_search_button, inner_right - quick_button_w,
+               row2_y - 1,
+               quick_button_w, hotkey_h + 4, TRUE);
+
+    row3_x = inner_left;
+    MoveWindow(g_app.filter_sensitive_check, row3_x, row3_y,
                filter_w, settings_h, TRUE);
-    MoveWindow(g_app.max_history_label,
-               g_app.search_rect.left + panel_pad + filter_w + 18,
-               g_app.search_rect.top + 103,
+    row3_x += filter_w + 22;
+    MoveWindow(g_app.max_history_label, row3_x,
+               row3_y + 4,
                max_label_w, settings_h, TRUE);
-    MoveWindow(g_app.max_history_edit,
-               g_app.search_rect.left + panel_pad + filter_w + 18 + max_label_w + 8,
-               g_app.search_rect.top + 98,
-               max_edit_w, settings_h, TRUE);
-    MoveWindow(g_app.quick_search_button,
-               g_app.search_rect.left + panel_pad + filter_w + 18 +
-                   max_label_w + 8 + max_edit_w + 18,
-               g_app.search_rect.top + 96,
-               quick_button_w, settings_h + 4, TRUE);
+    row3_x += max_label_w + 8;
+    MoveWindow(g_app.max_history_edit, row3_x,
+               row3_y - 2,
+               max_edit_w, settings_h + 4, TRUE);
 
     MoveWindow(g_app.history_label, g_app.left_panel_rect.left + panel_pad,
                g_app.left_panel_rect.top + 14, list_w - panel_pad * 2, label_h, TRUE);
@@ -1778,7 +1798,7 @@ static void layout_controls(HWND hwnd) {
                button_y,
                button_w, button_h, TRUE);
 
-    status_w = width - margin * 2 - panel_pad * 2 - (button_w + gap) * 4;
+    status_w = layout_width - margin * 2 - panel_pad * 2 - (button_w + gap) * 4;
     if (status_w < 220) {
         status_w = 220;
     }
@@ -1817,7 +1837,7 @@ static void create_controls(HWND hwnd) {
     g_app.search_edit = make_control(hwnd, L"EDIT", L"",
                                      WS_CHILD | WS_VISIBLE | WS_TABSTOP |
                                          ES_AUTOHSCROLL,
-                                     0, IDC_SEARCH_EDIT);
+                                     WS_EX_CLIENTEDGE, IDC_SEARCH_EDIT);
     SendMessageW(g_app.search_edit, EM_SETCUEBANNER, FALSE, (LPARAM)L"输入关键词过滤历史");
 
     g_app.pause_check = make_control(hwnd, L"BUTTON", L"暂停监听",
@@ -1831,7 +1851,7 @@ static void create_controls(HWND hwnd) {
     g_app.hotkey_display = make_control(hwnd, L"EDIT", L"",
                                         WS_CHILD | WS_VISIBLE | ES_READONLY |
                                             ES_AUTOHSCROLL,
-                                        0, IDC_HOTKEY_DISPLAY);
+                                        WS_EX_CLIENTEDGE, IDC_HOTKEY_DISPLAY);
     g_app.hotkey_set_button = make_control(hwnd, L"BUTTON", L"设置快捷键",
                                            WS_CHILD | WS_VISIBLE | WS_TABSTOP |
                                                BS_OWNERDRAW,
@@ -1846,7 +1866,7 @@ static void create_controls(HWND hwnd) {
     g_app.max_history_edit = make_control(hwnd, L"EDIT", L"",
                                           WS_CHILD | WS_VISIBLE | WS_TABSTOP |
                                               ES_AUTOHSCROLL | ES_NUMBER,
-                                          0, IDC_MAX_HISTORY_EDIT);
+                                          WS_EX_CLIENTEDGE, IDC_MAX_HISTORY_EDIT);
     g_app.quick_search_button = make_control(hwnd, L"BUTTON", L"快速搜索",
                                              WS_CHILD | WS_VISIBLE | WS_TABSTOP |
                                                  BS_OWNERDRAW,
@@ -1868,7 +1888,7 @@ static void create_controls(HWND hwnd) {
                                       WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_CLIPSIBLINGS |
                                           WS_VSCROLL | ES_MULTILINE | ES_AUTOVSCROLL |
                                           ES_READONLY,
-                                      0, IDC_PREVIEW_EDIT);
+                                      WS_EX_CLIENTEDGE, IDC_PREVIEW_EDIT);
     g_app.copy_button = make_control(hwnd, L"BUTTON", L"复制到剪贴板",
                                      WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
                                      0, IDC_COPY_BUTTON);
@@ -2084,6 +2104,8 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM l
             return 0;
         }
         layout_controls(hwnd);
+        RedrawWindow(hwnd, NULL, NULL,
+                     RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
         return 0;
 
     case WM_CLOSE:
@@ -2141,21 +2163,19 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM l
             SetTextColor(hdc, theme_text_color());
             return (LRESULT)g_app.surface_brush;
         } else if (control == g_app.title_text) {
-            SetBkMode(hdc, TRANSPARENT);
+            SetBkMode(hdc, OPAQUE);
+            SetBkColor(hdc, theme_surface_color());
             SetTextColor(hdc, theme_title_text_color());
         } else if (control == g_app.subtitle_text || control == g_app.status_text) {
             SetTextColor(hdc, theme_muted_text_color());
-            if (control == g_app.status_text) {
-                SetBkMode(hdc, OPAQUE);
-                SetBkColor(hdc, theme_surface_color());
-                return (LRESULT)g_app.surface_brush;
-            }
-            SetBkMode(hdc, TRANSPARENT);
+            SetBkMode(hdc, OPAQUE);
+            SetBkColor(hdc, theme_surface_color());
         } else {
-            SetBkMode(hdc, TRANSPARENT);
+            SetBkMode(hdc, OPAQUE);
+            SetBkColor(hdc, theme_surface_color());
             SetTextColor(hdc, theme_text_color());
         }
-        return (LRESULT)GetStockObject(HOLLOW_BRUSH);
+        return (LRESULT)g_app.surface_brush;
     }
 
     case WM_CTLCOLOREDIT:
@@ -2176,7 +2196,7 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM l
 
     case WM_GETMINMAXINFO: {
         MINMAXINFO *info = (MINMAXINFO *)lparam;
-        info->ptMinTrackSize.x = 820;
+        info->ptMinTrackSize.x = 940;
         info->ptMinTrackSize.y = 620;
         return 0;
     }
@@ -2340,6 +2360,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR command_line, i
     g_app.launched_hidden = command_line_has_hidden_flag();
 
     wc.lpfnWndProc = window_proc;
+    wc.style = CS_HREDRAW | CS_VREDRAW;
     wc.hInstance = instance;
     wc.lpszClassName = L"ClipKeeperWindowClass";
     wc.hCursor = LoadCursorW(NULL, MAKEINTRESOURCEW(32512));
@@ -2352,6 +2373,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR command_line, i
     }
 
     quick_wc.lpfnWndProc = quick_search_proc;
+    quick_wc.style = CS_HREDRAW | CS_VREDRAW;
     quick_wc.hInstance = instance;
     quick_wc.lpszClassName = QUICK_SEARCH_CLASS;
     quick_wc.hCursor = LoadCursorW(NULL, MAKEINTRESOURCEW(32512));
