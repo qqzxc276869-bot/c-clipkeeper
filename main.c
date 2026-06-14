@@ -1744,9 +1744,10 @@ static void layout_controls(HWND hwnd) {
                edit_h, TRUE);
 
     row2_right_w = hotkey_button_w + gap + quick_button_w;
-    row2_display_w = inner_w - hotkey_check_w - gap - row2_right_w - gap;
-    if (row2_display_w < 160) {
-        row2_display_w = 160;
+    row2_display_w = inner_right - row2_right_w - gap -
+                     (inner_left + hotkey_check_w + gap);
+    if (row2_display_w < 40) {
+        row2_display_w = 40;
     }
     MoveWindow(g_app.hotkey_check, inner_left, row2_y + 1,
                hotkey_check_w, hotkey_h, TRUE);
@@ -1856,7 +1857,7 @@ static void create_controls(HWND hwnd) {
                                            WS_CHILD | WS_VISIBLE | WS_TABSTOP |
                                                BS_OWNERDRAW,
                                            0, IDC_HOTKEY_SET_BUTTON);
-    g_app.filter_sensitive_check = make_control(hwnd, L"BUTTON", L"过滤敏感内容",
+    g_app.filter_sensitive_check = make_control(hwnd, L"BUTTON", L"跳过敏感内容",
                                                 WS_CHILD | WS_VISIBLE | WS_TABSTOP |
                                                     BS_CHECKBOX | BS_OWNERDRAW,
                                                 0, IDC_FILTER_SENSITIVE_CHECK);
@@ -1915,6 +1916,7 @@ static void create_controls(HWND hwnd) {
 static void draw_owner_button(const DRAWITEMSTRUCT *draw) {
     wchar_t text[128];
     RECT rc = draw->rcItem;
+    RECT bounds = draw->rcItem;
     COLORREF fill;
     COLORREF border;
     COLORREF text_color;
@@ -1924,6 +1926,7 @@ static void draw_owner_button(const DRAWITEMSTRUCT *draw) {
     HGDIOBJ old_font;
 
     GetWindowTextW(draw->hwndItem, text, 128);
+    fill_solid_rect(draw->hDC, &bounds, theme_surface_color());
     InflateRect(&rc, -2, -2);
 
     if (disabled) {
