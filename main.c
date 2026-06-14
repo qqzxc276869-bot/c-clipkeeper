@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <wchar.h>
+#include <wctype.h>
 
 #ifndef EM_SETCUEBANNER
 #define EM_SETCUEBANNER 0x1501
@@ -36,6 +37,12 @@
 #define IDC_HOTKEY_CHECK 1018
 #define IDC_HOTKEY_DISPLAY 1019
 #define IDC_HOTKEY_SET_BUTTON 1020
+#define IDC_FILTER_SENSITIVE_CHECK 1021
+#define IDC_MAX_HISTORY_LABEL 1022
+#define IDC_MAX_HISTORY_EDIT 1023
+#define IDC_QUICK_SEARCH_BUTTON 1024
+#define IDC_QUICK_SEARCH_EDIT 2001
+#define IDC_QUICK_SEARCH_LIST 2002
 
 #define WM_TRAYICON (WM_APP + 1)
 #define HOTKEY_SHOW_WINDOW 1
@@ -43,9 +50,14 @@
 #define ID_TRAY_SHOW 4001
 #define ID_TRAY_TOGGLE_PAUSE 4002
 #define ID_TRAY_EXIT 4003
+#define ID_TRAY_QUICK_SEARCH 4004
 
 #define RUN_KEY_PATH L"Software\\Microsoft\\Windows\\CurrentVersion\\Run"
 #define RUN_VALUE_NAME L"ClipKeeper"
+#define QUICK_SEARCH_CLASS L"ClipKeeperQuickSearchWindowClass"
+#define DEFAULT_HISTORY_LIMIT 500
+#define MIN_HISTORY_LIMIT 20
+#define MAX_HISTORY_LIMIT 5000
 
 typedef struct {
     ClipStore store;
@@ -73,6 +85,13 @@ typedef struct {
     HWND hotkey_check;
     HWND hotkey_display;
     HWND hotkey_set_button;
+    HWND filter_sensitive_check;
+    HWND max_history_label;
+    HWND max_history_edit;
+    HWND quick_search_button;
+    HWND quick_hwnd;
+    HWND quick_edit;
+    HWND quick_list;
     HFONT font;
     HFONT title_font;
     HFONT small_font;
@@ -88,6 +107,8 @@ typedef struct {
     int start_hidden;
     int launched_hidden;
     int pause_capture;
+    int filter_sensitive;
+    size_t max_history;
     int hotkey_enabled;
     UINT hotkey_modifiers;
     UINT hotkey_vk;
@@ -96,12 +117,15 @@ typedef struct {
     int hotkey_registered;
     int allow_exit;
     wchar_t *last_written_text;
+    ClipSearchResult quick_search;
 } AppState;
 
 static AppState g_app;
 
 static void update_status(void);
 static void redraw_opaque_control(HWND hwnd);
+static void show_quick_search(void);
+static LRESULT CALLBACK quick_search_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam);
 
 static void set_status(const wchar_t *text) {
     if (g_app.status_text == NULL || !IsWindow(g_app.status_text)) {
@@ -321,10 +345,22 @@ static void save_settings(void) {
 
     fprintf(file, "theme=%s\n", g_app.dark_theme ? "dark" : "light");
     fprintf(file, "start_hidden=%d\n", g_app.start_hidden ? 1 : 0);
+    fprintf(file, "filter_sensitive=%d\n", g_app.filter_sensitive ? 1 : 0);
+    fprintf(file, "max_history=%u\n", (unsigned int)g_app.max_history);
     fprintf(file, "hotkey_enabled=%d\n", g_app.hotkey_enabled ? 1 : 0);
     fprintf(file, "hotkey_modifiers=%u\n", (unsigned int)g_app.hotkey_modifiers);
     fprintf(file, "hotkey_vk=%u\n", (unsigned int)g_app.hotkey_vk);
     fclose(file);
+}
+
+static size_t clamp_history_limit(size_t value) {
+    if (value < MIN_HISTORY_LIMIT) {
+        return MIN_HISTORY_LIMIT;
+    }
+    if (value > MAX_HISTORY_LIMIT) {
+        return MAX_HISTORY_LIMIT;
+    }
+    return value;
 }
 
 static void load_settings(void) {
@@ -333,6 +369,8 @@ static void load_settings(void) {
 
     g_app.dark_theme = 0;
     g_app.start_hidden = 0;
+    g_app.filter_sensitive = 1;
+    g_app.max_history = DEFAULT_HISTORY_LIMIT;
     g_app.hotkey_enabled = 0;
     g_app.hotkey_modifiers = MOD_CONTROL | MOD_SHIFT;
     g_app.hotkey_vk = 'V';
@@ -355,6 +393,18 @@ static void load_settings(void) {
         }
         if (strncmp(line, "start_hidden=0", 14) == 0) {
             g_app.start_hidden = 0;
+            continue;
+        }
+        if (strncmp(line, "filter_sensitive=1", 18) == 0) {
+            g_app.filter_sensitive = 1;
+            continue;
+        }
+        if (strncmp(line, "filter_sensitive=0", 18) == 0) {
+            g_app.filter_sensitive = 0;
+            continue;
+        }
+        if (strncmp(line, "max_history=", 12) == 0) {
+            g_app.max_history = clamp_history_limit((size_t)strtoul(line + 12, NULL, 10));
             continue;
         }
         if (strncmp(line, "hotkey_enabled=1", 16) == 0) {
@@ -405,17 +455,184 @@ static void apply_theme_to_controls(void) {
     }
     sync_switch_check(g_app.pause_check, g_app.pause_capture);
     sync_switch_check(g_app.hotkey_check, g_app.hotkey_enabled);
+    sync_switch_check(g_app.filter_sensitive_check, g_app.filter_sensitive);
 
     InvalidateRect(g_app.hwnd, NULL, TRUE);
     InvalidateRect(g_app.search_edit, NULL, TRUE);
     InvalidateRect(g_app.history_list, NULL, TRUE);
     InvalidateRect(g_app.preview_edit, NULL, TRUE);
     InvalidateRect(g_app.hotkey_display, NULL, TRUE);
+    InvalidateRect(g_app.max_history_edit, NULL, TRUE);
     redraw_control(g_app.copy_button);
     redraw_control(g_app.pin_button);
     redraw_control(g_app.delete_button);
     redraw_control(g_app.clear_button);
     redraw_control(g_app.hotkey_set_button);
+    redraw_control(g_app.quick_search_button);
+    redraw_control(g_app.quick_hwnd);
+    redraw_opaque_control(g_app.quick_edit);
+    redraw_opaque_control(g_app.quick_list);
+}
+
+static void sync_history_settings_controls(void) {
+    wchar_t limit_text[32];
+
+    if (g_app.filter_sensitive_check != NULL) {
+        sync_switch_check(g_app.filter_sensitive_check, g_app.filter_sensitive);
+    }
+    if (g_app.max_history_edit != NULL) {
+        swprintf(limit_text, 32, L"%u", (unsigned int)g_app.max_history);
+        SetWindowTextW(g_app.max_history_edit, limit_text);
+        redraw_opaque_control(g_app.max_history_edit);
+    }
+}
+
+static int contains_case_wide_local(const wchar_t *text, const wchar_t *keyword) {
+    size_t text_len;
+    size_t key_len;
+    size_t i;
+
+    if (keyword == NULL || keyword[0] == L'\0') {
+        return 1;
+    }
+    if (text == NULL) {
+        return 0;
+    }
+
+    text_len = wcslen(text);
+    key_len = wcslen(keyword);
+    if (key_len > text_len) {
+        return 0;
+    }
+
+    for (i = 0; i + key_len <= text_len; i++) {
+        size_t j;
+        for (j = 0; j < key_len; j++) {
+            if (towlower(text[i + j]) != towlower(keyword[j])) {
+                break;
+            }
+        }
+        if (j == key_len) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+static int has_sensitive_keyword(const wchar_t *text) {
+    static const wchar_t *keywords[] = {
+        L"密码", L"验证码", L"口令", L"令牌", L"密钥", L"私钥",
+        L"银行卡", L"身份证", L"password", L"passwd", L"pwd",
+        L"token", L"secret", L"api_key", L"apikey", L"access_key",
+        L"authorization", L"bearer", L"private key"
+    };
+    size_t i;
+
+    for (i = 0; i < sizeof(keywords) / sizeof(keywords[0]); i++) {
+        if (contains_case_wide_local(text, keywords[i])) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int looks_like_short_code(const wchar_t *text) {
+    size_t digits = 0;
+    size_t chars = 0;
+
+    while (text != NULL && *text != L'\0') {
+        if (!iswspace(*text)) {
+            chars++;
+            if (!iswdigit(*text)) {
+                return 0;
+            }
+            digits++;
+        }
+        text++;
+    }
+
+    return digits >= 4 && digits <= 8 && chars == digits;
+}
+
+static int luhn_valid_digits(const wchar_t *digits, size_t count) {
+    int sum = 0;
+    int double_digit = 0;
+    size_t i;
+
+    if (count < 13 || count > 19) {
+        return 0;
+    }
+
+    for (i = count; i > 0; i--) {
+        int value = (int)(digits[i - 1] - L'0');
+        if (double_digit) {
+            value *= 2;
+            if (value > 9) {
+                value -= 9;
+            }
+        }
+        sum += value;
+        double_digit = !double_digit;
+    }
+
+    return sum % 10 == 0;
+}
+
+static int has_bank_card_number(const wchar_t *text) {
+    wchar_t digits[32];
+    size_t count = 0;
+
+    while (text != NULL && *text != L'\0') {
+        if (iswdigit(*text)) {
+            if (count < sizeof(digits) / sizeof(digits[0])) {
+                digits[count++] = *text;
+            }
+        } else {
+            if (luhn_valid_digits(digits, count)) {
+                return 1;
+            }
+            count = 0;
+        }
+        text++;
+    }
+
+    return luhn_valid_digits(digits, count);
+}
+
+static int has_long_secret_token(const wchar_t *text) {
+    size_t run = 0;
+    int has_letter = 0;
+    int has_digit = 0;
+
+    while (text != NULL && *text != L'\0') {
+        wchar_t ch = *text++;
+        if (iswalnum(ch) || ch == L'_' || ch == L'-' || ch == L'.' ||
+            ch == L'/' || ch == L'+' || ch == L'=') {
+            run++;
+            if (iswalpha(ch)) {
+                has_letter = 1;
+            } else if (iswdigit(ch)) {
+                has_digit = 1;
+            }
+            if (run >= 32 && has_letter && has_digit) {
+                return 1;
+            }
+        } else {
+            run = 0;
+            has_letter = 0;
+            has_digit = 0;
+        }
+    }
+
+    return 0;
+}
+
+static int looks_sensitive_clip_text(const wchar_t *text) {
+    return has_sensitive_keyword(text) ||
+           looks_like_short_code(text) ||
+           has_bank_card_number(text) ||
+           has_long_secret_token(text);
 }
 
 static int is_modifier_vk(UINT vk) {
@@ -649,6 +866,14 @@ static void handle_start_hidden_toggle(void) {
                                   : L"开机自启动时将显示主窗口。");
 }
 
+static void handle_filter_sensitive_toggle(void) {
+    g_app.filter_sensitive = !g_app.filter_sensitive;
+    save_settings();
+    sync_switch_check(g_app.filter_sensitive_check, g_app.filter_sensitive);
+    set_status(g_app.filter_sensitive ? L"已开启敏感内容过滤。"
+                                      : L"已关闭敏感内容过滤。");
+}
+
 static void handle_hotkey_toggle(void) {
     g_app.hotkey_enabled = !g_app.hotkey_enabled;
     g_app.hotkey_capture = 0;
@@ -850,6 +1075,7 @@ static void show_tray_menu(void) {
     }
 
     AppendMenuW(menu, MF_STRING, ID_TRAY_SHOW, L"打开主窗口");
+    AppendMenuW(menu, MF_STRING, ID_TRAY_QUICK_SEARCH, L"快速搜索");
     AppendMenuW(menu, MF_STRING, ID_TRAY_TOGGLE_PAUSE,
                 paused ? L"继续监听" : L"暂停监听");
     AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
@@ -1000,6 +1226,48 @@ static void save_store_or_warn(void) {
     }
 }
 
+static size_t enforce_history_limit(int refresh) {
+    size_t removed = store_prune_to_limit(&g_app.store, g_app.max_history);
+
+    if (removed > 0) {
+        save_store_or_warn();
+        if (refresh) {
+            refresh_history_list(list_selected_id());
+        }
+    }
+
+    return removed;
+}
+
+static void handle_history_limit_change(void) {
+    wchar_t text[32];
+    wchar_t status[128];
+    wchar_t *end = NULL;
+    unsigned long parsed;
+    size_t removed;
+
+    if (g_app.max_history_edit == NULL) {
+        return;
+    }
+
+    GetWindowTextW(g_app.max_history_edit, text, 32);
+    parsed = wcstoul(text, &end, 10);
+    if (end == text) {
+        sync_history_settings_controls();
+        set_status(L"保存上限未修改：请输入数字。");
+        return;
+    }
+
+    g_app.max_history = clamp_history_limit((size_t)parsed);
+    save_settings();
+    sync_history_settings_controls();
+    removed = enforce_history_limit(1);
+
+    swprintf(status, 128, L"保存上限已设为 %u 条，本次清理 %u 条旧记录。",
+             (unsigned int)g_app.max_history, (unsigned int)removed);
+    set_status(status);
+}
+
 static void capture_clipboard_text(void) {
     wchar_t *text;
     ClipItem *item;
@@ -1016,10 +1284,17 @@ static void capture_clipboard_text(void) {
         return;
     }
 
+    if (g_app.filter_sensitive && looks_sensitive_clip_text(text)) {
+        free(text);
+        set_status(L"已跳过疑似敏感内容，未保存到历史。");
+        return;
+    }
+
     item = store_add_text(&g_app.store, text);
     free(text);
 
     if (item != NULL) {
+        enforce_history_limit(0);
         save_store_or_warn();
         refresh_history_list(item->id);
     }
@@ -1088,6 +1363,256 @@ static void clear_all_clips(void) {
     refresh_history_list(0);
 }
 
+static unsigned long quick_selected_id(void) {
+    LRESULT selected;
+
+    if (g_app.quick_list == NULL) {
+        return 0;
+    }
+
+    selected = SendMessageW(g_app.quick_list, LB_GETCURSEL, 0, 0);
+    if (selected == LB_ERR) {
+        return 0;
+    }
+
+    return (unsigned long)(ULONG_PTR)SendMessageW(g_app.quick_list, LB_GETITEMDATA,
+                                                 (WPARAM)selected, 0);
+}
+
+static void refresh_quick_search_list(unsigned long preferred_id) {
+    wchar_t keyword[256];
+    size_t i;
+    LRESULT first_match = LB_ERR;
+
+    if (g_app.quick_edit == NULL || g_app.quick_list == NULL) {
+        return;
+    }
+
+    GetWindowTextW(g_app.quick_edit, keyword, 256);
+    if (!store_search(&g_app.store, keyword, &g_app.quick_search)) {
+        set_status(L"快速搜索失败：内存不足。");
+        return;
+    }
+
+    SendMessageW(g_app.quick_list, WM_SETREDRAW, FALSE, 0);
+    SendMessageW(g_app.quick_list, LB_RESETCONTENT, 0, 0);
+
+    for (i = 0; i < g_app.quick_search.count; i++) {
+        unsigned long id = g_app.quick_search.ids[i];
+        const ClipItem *item = store_find_const(&g_app.store, id);
+        wchar_t preview[128];
+        wchar_t created[32];
+        wchar_t row[512];
+        LRESULT index;
+
+        if (item == NULL) {
+            continue;
+        }
+
+        store_preview_text(item->text, preview, 128);
+        store_format_time(item->created_at, created, 32);
+        swprintf(row, 512, L"%ls  %ls  |  复制 %u 次  |  %ls",
+                 item->pinned ? L"[置顶]" : L"      ",
+                 created,
+                 item->copy_count,
+                 preview);
+
+        index = SendMessageW(g_app.quick_list, LB_ADDSTRING, 0, (LPARAM)row);
+        if (index != LB_ERR && index != LB_ERRSPACE) {
+            SendMessageW(g_app.quick_list, LB_SETITEMDATA, (WPARAM)index,
+                         (LPARAM)(ULONG_PTR)item->id);
+            if (id == preferred_id) {
+                first_match = index;
+            }
+        }
+    }
+
+    SendMessageW(g_app.quick_list, WM_SETREDRAW, TRUE, 0);
+    redraw_opaque_control(g_app.quick_list);
+
+    if (first_match != LB_ERR) {
+        SendMessageW(g_app.quick_list, LB_SETCURSEL, (WPARAM)first_match, 0);
+    } else if (SendMessageW(g_app.quick_list, LB_GETCOUNT, 0, 0) > 0) {
+        SendMessageW(g_app.quick_list, LB_SETCURSEL, 0, 0);
+    }
+}
+
+static void copy_quick_selected_clip(void) {
+    unsigned long id = quick_selected_id();
+    const ClipItem *item = store_find_const(&g_app.store, id);
+
+    if (item == NULL) {
+        set_status(L"快速搜索没有选中记录。");
+        return;
+    }
+
+    free(g_app.last_written_text);
+    g_app.last_written_text = app_dup_wide(item->text);
+    if (!clipboard_write_text(g_app.hwnd, item->text)) {
+        free(g_app.last_written_text);
+        g_app.last_written_text = NULL;
+        MessageBoxW(g_app.hwnd, L"无法写入剪贴板。", APP_TITLE, MB_ICONERROR);
+        return;
+    }
+
+    store_increment_copy_count(&g_app.store, id);
+    save_store_or_warn();
+    refresh_history_list(id);
+    if (g_app.quick_hwnd != NULL) {
+        ShowWindow(g_app.quick_hwnd, SW_HIDE);
+    }
+    set_status(L"已从快速搜索复制到剪贴板。");
+}
+
+static void position_quick_search_window(void) {
+    RECT anchor;
+    RECT work;
+    int width = 640;
+    int height = 360;
+    int x;
+    int y;
+
+    if (g_app.quick_hwnd == NULL) {
+        return;
+    }
+
+    if (IsWindowVisible(g_app.hwnd)) {
+        GetWindowRect(g_app.hwnd, &anchor);
+    } else {
+        SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
+        anchor = work;
+    }
+
+    SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
+    x = anchor.left + ((anchor.right - anchor.left) - width) / 2;
+    y = anchor.top + 96;
+    if (x < work.left + 12) {
+        x = work.left + 12;
+    }
+    if (x + width > work.right - 12) {
+        x = work.right - width - 12;
+    }
+    if (y < work.top + 12) {
+        y = work.top + 12;
+    }
+    if (y + height > work.bottom - 12) {
+        y = work.bottom - height - 12;
+    }
+
+    SetWindowPos(g_app.quick_hwnd, HWND_TOPMOST, x, y, width, height,
+                 SWP_NOACTIVATE);
+}
+
+static void show_quick_search(void) {
+    if (g_app.quick_hwnd == NULL || !IsWindow(g_app.quick_hwnd)) {
+        g_app.quick_hwnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
+                                           QUICK_SEARCH_CLASS,
+                                           L"快速搜索剪贴板",
+                                           WS_POPUP | WS_CAPTION | WS_SYSMENU |
+                                               WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
+                                           CW_USEDEFAULT, CW_USEDEFAULT, 640, 360,
+                                           g_app.hwnd, NULL,
+                                           GetModuleHandleW(NULL), NULL);
+        if (g_app.quick_hwnd == NULL) {
+            MessageBoxW(g_app.hwnd, L"无法创建快速搜索窗口。", APP_TITLE,
+                        MB_ICONERROR);
+            return;
+        }
+    }
+
+    position_quick_search_window();
+    SetWindowTextW(g_app.quick_edit, L"");
+    refresh_quick_search_list(0);
+    ShowWindow(g_app.quick_hwnd, SW_SHOWNORMAL);
+    SetForegroundWindow(g_app.quick_hwnd);
+    SetFocus(g_app.quick_edit);
+    SendMessageW(g_app.quick_edit, EM_SETSEL, 0, -1);
+}
+
+static LRESULT CALLBACK quick_search_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
+    switch (msg) {
+    case WM_CREATE:
+        g_app.quick_hwnd = hwnd;
+        g_app.quick_edit = make_control(hwnd, L"EDIT", L"",
+                                        WS_CHILD | WS_VISIBLE | WS_TABSTOP |
+                                            ES_AUTOHSCROLL,
+                                        0, IDC_QUICK_SEARCH_EDIT);
+        g_app.quick_list = make_control(hwnd, L"LISTBOX", L"",
+                                        WS_CHILD | WS_VISIBLE | WS_TABSTOP |
+                                            WS_VSCROLL | LBS_NOTIFY |
+                                            LBS_NOINTEGRALHEIGHT |
+                                            LBS_HASSTRINGS,
+                                        0, IDC_QUICK_SEARCH_LIST);
+        SendMessageW(g_app.quick_edit, EM_SETCUEBANNER, FALSE,
+                     (LPARAM)L"输入关键字，回车复制，Esc 关闭");
+        SendMessageW(g_app.quick_list, LB_SETITEMHEIGHT, 0, 28);
+        return 0;
+
+    case WM_SIZE: {
+        RECT rc;
+        int width;
+        int height;
+        GetClientRect(hwnd, &rc);
+        width = rc.right - rc.left;
+        height = rc.bottom - rc.top;
+        MoveWindow(g_app.quick_edit, 18, 18, width - 36, 34, TRUE);
+        MoveWindow(g_app.quick_list, 18, 64, width - 36, height - 82, TRUE);
+        return 0;
+    }
+
+    case WM_CLOSE:
+        ShowWindow(hwnd, SW_HIDE);
+        return 0;
+
+    case WM_COMMAND:
+        switch (LOWORD(wparam)) {
+        case IDC_QUICK_SEARCH_EDIT:
+            if (HIWORD(wparam) == EN_CHANGE) {
+                refresh_quick_search_list(0);
+            }
+            return 0;
+
+        case IDC_QUICK_SEARCH_LIST:
+            if (HIWORD(wparam) == LBN_DBLCLK) {
+                copy_quick_selected_clip();
+            }
+            return 0;
+
+        default:
+            break;
+        }
+        break;
+
+    case WM_ERASEBKGND: {
+        RECT rc;
+        HDC hdc = (HDC)wparam;
+        GetClientRect(hwnd, &rc);
+        fill_solid_rect(hdc, &rc, theme_surface_color());
+        return 1;
+    }
+
+    case WM_CTLCOLORSTATIC:
+    case WM_CTLCOLOREDIT:
+    case WM_CTLCOLORLISTBOX: {
+        HDC hdc = (HDC)wparam;
+        SetTextColor(hdc, theme_text_color());
+        SetBkColor(hdc, theme_surface_color());
+        SetBkMode(hdc, OPAQUE);
+        return (LRESULT)g_app.surface_brush;
+    }
+
+    case WM_DESTROY:
+        if (g_app.quick_hwnd == hwnd) {
+            g_app.quick_hwnd = NULL;
+            g_app.quick_edit = NULL;
+            g_app.quick_list = NULL;
+        }
+        return 0;
+    }
+
+    return DefWindowProcW(hwnd, msg, wparam, lparam);
+}
+
 static void layout_controls(HWND hwnd) {
     RECT rc;
     int width;
@@ -1099,12 +1624,17 @@ static void layout_controls(HWND hwnd) {
     int label_h = 24;
     int edit_h = 32;
     int hotkey_h = 30;
+    int settings_h = 30;
     int button_h = 38;
     int button_w = 132;
     int pause_w = 112;
     int hotkey_check_w = 112;
     int hotkey_display_w = 176;
     int hotkey_button_w = 116;
+    int filter_w = 136;
+    int max_label_w = 72;
+    int max_edit_w = 74;
+    int quick_button_w = 116;
     int startup_w = 128;
     int hidden_w = 128;
     int theme_w = 116;
@@ -1132,7 +1662,7 @@ static void layout_controls(HWND hwnd) {
     g_app.search_rect.left = margin;
     g_app.search_rect.top = g_app.hero_rect.bottom + 14;
     g_app.search_rect.right = width - margin;
-    g_app.search_rect.bottom = g_app.search_rect.top + 104;
+    g_app.search_rect.bottom = g_app.search_rect.top + 142;
 
     g_app.action_rect.left = margin;
     g_app.action_rect.right = width - margin;
@@ -1205,6 +1735,22 @@ static void layout_controls(HWND hwnd) {
                    hotkey_display_w + 10,
                g_app.search_rect.top + 58,
                hotkey_button_w, hotkey_h, TRUE);
+    MoveWindow(g_app.filter_sensitive_check, g_app.search_rect.left + panel_pad,
+               g_app.search_rect.top + 100,
+               filter_w, settings_h, TRUE);
+    MoveWindow(g_app.max_history_label,
+               g_app.search_rect.left + panel_pad + filter_w + 18,
+               g_app.search_rect.top + 103,
+               max_label_w, settings_h, TRUE);
+    MoveWindow(g_app.max_history_edit,
+               g_app.search_rect.left + panel_pad + filter_w + 18 + max_label_w + 8,
+               g_app.search_rect.top + 98,
+               max_edit_w, settings_h, TRUE);
+    MoveWindow(g_app.quick_search_button,
+               g_app.search_rect.left + panel_pad + filter_w + 18 +
+                   max_label_w + 8 + max_edit_w + 18,
+               g_app.search_rect.top + 96,
+               quick_button_w, settings_h + 4, TRUE);
 
     MoveWindow(g_app.history_label, g_app.left_panel_rect.left + panel_pad,
                g_app.left_panel_rect.top + 14, list_w - panel_pad * 2, label_h, TRUE);
@@ -1290,6 +1836,21 @@ static void create_controls(HWND hwnd) {
                                            WS_CHILD | WS_VISIBLE | WS_TABSTOP |
                                                BS_OWNERDRAW,
                                            0, IDC_HOTKEY_SET_BUTTON);
+    g_app.filter_sensitive_check = make_control(hwnd, L"BUTTON", L"过滤敏感内容",
+                                                WS_CHILD | WS_VISIBLE | WS_TABSTOP |
+                                                    BS_CHECKBOX | BS_OWNERDRAW,
+                                                0, IDC_FILTER_SENSITIVE_CHECK);
+    g_app.max_history_label = make_control(hwnd, L"STATIC", L"保存上限",
+                                           WS_CHILD | WS_VISIBLE, 0,
+                                           IDC_MAX_HISTORY_LABEL);
+    g_app.max_history_edit = make_control(hwnd, L"EDIT", L"",
+                                          WS_CHILD | WS_VISIBLE | WS_TABSTOP |
+                                              ES_AUTOHSCROLL | ES_NUMBER,
+                                          0, IDC_MAX_HISTORY_EDIT);
+    g_app.quick_search_button = make_control(hwnd, L"BUTTON", L"快速搜索",
+                                             WS_CHILD | WS_VISIBLE | WS_TABSTOP |
+                                                 BS_OWNERDRAW,
+                                             0, IDC_QUICK_SEARCH_BUTTON);
     g_app.history_label = make_control(hwnd, L"STATIC", L"历史记录",
                                        WS_CHILD | WS_VISIBLE, 0, IDC_HISTORY_LABEL);
     g_app.history_list = make_control(hwnd, L"LISTBOX", L"",
@@ -1327,6 +1888,7 @@ static void create_controls(HWND hwnd) {
     SendMessageW(g_app.status_text, WM_SETFONT, (WPARAM)g_app.small_font, TRUE);
     sync_startup_checkbox();
     sync_hotkey_controls();
+    sync_history_settings_controls();
     apply_theme_to_controls();
 }
 
@@ -1379,6 +1941,8 @@ static int switch_checked_for_control(UINT control_id) {
         return g_app.dark_theme;
     case IDC_PAUSE_CHECK:
         return g_app.pause_capture;
+    case IDC_FILTER_SENSITIVE_CHECK:
+        return g_app.filter_sensitive;
     case IDC_HOTKEY_CHECK:
         return g_app.hotkey_enabled;
     default:
@@ -1489,6 +2053,7 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM l
         g_app.hwnd = hwnd;
         store_init(&g_app.store);
         search_result_init(&g_app.search);
+        search_result_init(&g_app.quick_search);
         build_app_paths();
         load_settings();
         refresh_theme_brushes();
@@ -1499,6 +2064,7 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM l
             MessageBoxW(hwnd, L"无法读取 clips.tsv，将使用空历史记录启动。",
                         APP_TITLE, MB_ICONWARNING);
         }
+        enforce_history_limit(0);
 
         AddClipboardFormatListener(hwnd);
         add_tray_icon(hwnd);
@@ -1551,13 +2117,15 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM l
         }
         if (draw->CtlID == IDC_COPY_BUTTON || draw->CtlID == IDC_PIN_BUTTON ||
             draw->CtlID == IDC_DELETE_BUTTON || draw->CtlID == IDC_CLEAR_BUTTON ||
-            draw->CtlID == IDC_HOTKEY_SET_BUTTON) {
+            draw->CtlID == IDC_HOTKEY_SET_BUTTON ||
+            draw->CtlID == IDC_QUICK_SEARCH_BUTTON) {
             draw_owner_button(draw);
             return TRUE;
         }
         if (draw->CtlID == IDC_STARTUP_CHECK || draw->CtlID == IDC_START_HIDDEN_CHECK ||
             draw->CtlID == IDC_THEME_CHECK || draw->CtlID == IDC_PAUSE_CHECK ||
-            draw->CtlID == IDC_HOTKEY_CHECK) {
+            draw->CtlID == IDC_HOTKEY_CHECK ||
+            draw->CtlID == IDC_FILTER_SENSITIVE_CHECK) {
             draw_owner_switch(draw);
             return TRUE;
         }
@@ -1609,7 +2177,7 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM l
     case WM_GETMINMAXINFO: {
         MINMAXINFO *info = (MINMAXINFO *)lparam;
         info->ptMinTrackSize.x = 820;
-        info->ptMinTrackSize.y = 520;
+        info->ptMinTrackSize.y = 620;
         return 0;
     }
 
@@ -1621,7 +2189,7 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM l
 
     case WM_HOTKEY:
         if (wparam == HOTKEY_SHOW_WINDOW) {
-            show_main_window();
+            show_quick_search();
         }
         return 0;
 
@@ -1645,6 +2213,10 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM l
         switch (LOWORD(wparam)) {
         case ID_TRAY_SHOW:
             show_main_window();
+            return 0;
+
+        case ID_TRAY_QUICK_SEARCH:
+            show_quick_search();
             return 0;
 
         case ID_TRAY_TOGGLE_PAUSE:
@@ -1711,6 +2283,20 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM l
             begin_hotkey_capture();
             return 0;
 
+        case IDC_FILTER_SENSITIVE_CHECK:
+            handle_filter_sensitive_toggle();
+            return 0;
+
+        case IDC_MAX_HISTORY_EDIT:
+            if (HIWORD(wparam) == EN_KILLFOCUS) {
+                handle_history_limit_change();
+            }
+            return 0;
+
+        case IDC_QUICK_SEARCH_BUTTON:
+            show_quick_search();
+            return 0;
+
         default:
             break;
         }
@@ -1725,6 +2311,7 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM l
         store_save(&g_app.store, g_app.data_path);
         free(g_app.last_written_text);
         search_result_free(&g_app.search);
+        search_result_free(&g_app.quick_search);
         store_free(&g_app.store);
         DeleteObject(g_app.font);
         DeleteObject(g_app.title_font);
@@ -1740,6 +2327,7 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM l
 
 int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR command_line, int show_command) {
     WNDCLASSW wc;
+    WNDCLASSW quick_wc;
     HWND hwnd;
     MSG msg;
 
@@ -1748,6 +2336,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR command_line, i
 
     ZeroMemory(&g_app, sizeof(g_app));
     ZeroMemory(&wc, sizeof(wc));
+    ZeroMemory(&quick_wc, sizeof(quick_wc));
     g_app.launched_hidden = command_line_has_hidden_flag();
 
     wc.lpfnWndProc = window_proc;
@@ -1759,6 +2348,17 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR command_line, i
 
     if (!RegisterClassW(&wc)) {
         MessageBoxW(NULL, L"无法注册窗口类。", APP_TITLE, MB_ICONERROR);
+        return 1;
+    }
+
+    quick_wc.lpfnWndProc = quick_search_proc;
+    quick_wc.hInstance = instance;
+    quick_wc.lpszClassName = QUICK_SEARCH_CLASS;
+    quick_wc.hCursor = LoadCursorW(NULL, MAKEINTRESOURCEW(32512));
+    quick_wc.hIcon = LoadIconW(NULL, MAKEINTRESOURCEW(32512));
+    quick_wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+    if (!RegisterClassW(&quick_wc)) {
+        MessageBoxW(NULL, L"无法注册快速搜索窗口类。", APP_TITLE, MB_ICONERROR);
         return 1;
     }
 
@@ -1782,6 +2382,22 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR command_line, i
         if (g_app.hotkey_capture &&
             (msg.message == WM_KEYDOWN || msg.message == WM_SYSKEYDOWN)) {
             finish_hotkey_capture((UINT)msg.wParam);
+            continue;
+        }
+        if (g_app.quick_hwnd != NULL && IsWindowVisible(g_app.quick_hwnd) &&
+            (msg.hwnd == g_app.quick_hwnd || IsChild(g_app.quick_hwnd, msg.hwnd)) &&
+            msg.message == WM_KEYDOWN) {
+            if (msg.wParam == VK_ESCAPE) {
+                ShowWindow(g_app.quick_hwnd, SW_HIDE);
+                continue;
+            }
+            if (msg.wParam == VK_RETURN) {
+                copy_quick_selected_clip();
+                continue;
+            }
+        }
+        if (g_app.quick_hwnd != NULL && IsWindowVisible(g_app.quick_hwnd) &&
+            IsDialogMessageW(g_app.quick_hwnd, &msg)) {
             continue;
         }
         TranslateMessage(&msg);

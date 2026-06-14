@@ -38,6 +38,7 @@ const ClipItem *store_find_const(const ClipStore *store, unsigned long id);
 
 int store_delete(ClipStore *store, unsigned long id);
 int store_toggle_pin(ClipStore *store, unsigned long id);
+size_t store_prune_to_limit(ClipStore *store, size_t max_items);
 void store_clear(ClipStore *store);
 void store_increment_copy_count(ClipStore *store, unsigned long id);
 

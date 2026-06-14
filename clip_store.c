@@ -530,6 +530,41 @@ int store_toggle_pin(ClipStore *store, unsigned long id) {
     return 1;
 }
 
+size_t store_prune_to_limit(ClipStore *store, size_t max_items) {
+    size_t removed = 0;
+
+    if (max_items == 0) {
+        return 0;
+    }
+
+    sort_store(store);
+    while (store->count > max_items) {
+        size_t i;
+        size_t remove_index = store->count;
+
+        for (i = store->count; i > 0; i--) {
+            if (!store->items[i - 1].pinned) {
+                remove_index = i - 1;
+                break;
+            }
+        }
+
+        if (remove_index == store->count) {
+            break;
+        }
+
+        free_item(&store->items[remove_index]);
+        if (remove_index + 1 < store->count) {
+            memmove(&store->items[remove_index], &store->items[remove_index + 1],
+                    (store->count - remove_index - 1) * sizeof(ClipItem));
+        }
+        store->count--;
+        removed++;
+    }
+
+    return removed;
+}
+
 void store_clear(ClipStore *store) {
     size_t i;
 
